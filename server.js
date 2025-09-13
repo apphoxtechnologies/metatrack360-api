@@ -53,6 +53,21 @@ const transporter = nodemailer.createTransport({
     },
 });
 
+// --- NEW HELPER FUNCTION TO FORMAT DATES ---
+const formatDateForInput = (dateString) => {
+    if (!dateString) {
+        return null;
+    }
+    // Converts a full timestamp (like "2025-10-01T00:00:00.000Z")
+    // into a "YYYY-MM-DD" string required by HTML date inputs.
+    try {
+        return new Date(dateString).toISOString().split('T')[0];
+    } catch (e) {
+        return null; // Return null if the date is invalid
+    }
+};
+
+
 const app = express();
 
 // Middleware
@@ -75,31 +90,52 @@ app.post('/api/users/register', async (req, res) => { try { const { name, email,
 app.post('/api/users/set-password', async (req, res) => { try { const { token, password } = req.body; const hashedToken = crypto.createHash('sha256').update(token).digest('hex'); const findUserSql = `SELECT * FROM users WHERE passwordResetToken = ? AND passwordResetExpires > NOW()`; const [users] = await db.query(findUserSql, [hashedToken]); if (users.length === 0) { return res.status(400).json({ error: 'Password reset token is invalid or has expired.' }); } const user = users[0]; const salt = await bcrypt.genSalt(10); const hashedPassword = await bcrypt.hash(password, salt); const updateUserSql = `UPDATE users SET password = ?, passwordResetToken = NULL, passwordResetExpires = NULL WHERE id = ?`; await db.query(updateUserSql, [hashedPassword, user.id]); res.json({ message: 'Password has been set successfully.' }); } catch (err) { console.error('Error setting password:', err); res.status(500).json({ error: 'Failed to set password.' }); } });
 
 // --- API Routes for Employees ---
-app.get('/api/employees', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Active' ORDER BY id DESC"); res.json(rows); } catch (err) { console.error('Error fetching employees:', err); res.status(500).json({ error: 'Failed to fetch employees' }); } });
-app.get('/api/employees/archived', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Inactive' ORDER BY id DESC"); res.json(rows); } catch (err) { console.error('Error fetching archived employees:', err); res.status(500).json({ error: 'Failed to fetch archived employees' }); } });
+app.get('/api/employees', async (req, res) => {
+    try {
+        const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Active' ORDER BY id DESC");
+        const formattedRows = rows.map(row => ({
+            ...row,
+            joinDate: formatDateForInput(row.joinDate),
+            lastVariablePayDate: formatDateForInput(row.lastVariablePayDate)
+        }));
+        res.json(formattedRows);
+    } catch (err) {
+        console.error('Error fetching employees:', err);
+        res.status(500).json({ error: 'Failed to fetch employees' });
+    }
+});
+app.get('/api/employees/archived', async (req, res) => {
+    try {
+        const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Inactive' ORDER BY id DESC");
+        const formattedRows = rows.map(row => ({
+            ...row,
+            joinDate: formatDateForInput(row.joinDate),
+            lastVariablePayDate: formatDateForInput(row.lastVariablePayDate),
+            lastWorkingDate: formatDateForInput(row.lastWorkingDate)
+        }));
+        res.json(formattedRows);
+    } catch (err) {
+        console.error('Error fetching archived employees:', err);
+        res.status(500).json({ error: 'Failed to fetch archived employees' });
+    }
+});
 app.post('/api/employees', async (req, res) => { try { const { name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents } = req.body; const sql = `INSERT INTO employees (name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; const [result] = await db.query(sql, [name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents || '[]']); res.status(201).json({ message: 'Employee created successfully!', insertId: result.insertId }); } catch (err) { console.error('Error creating employee:', err); res.status(500).json({ error: 'Failed to create employee' }); } });
 
-// --- THIS IS THE UPDATED CODE BLOCK ---
 app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res) => {
     try {
         const { id } = req.params;
-        // Use 'let' to allow modification of variables from req.body
         let {
             name, department, position, email, phone, joinDate, ctc, location,
             bankAccountNumber, pfNumber, uan, serviceLine, variablePay,
             probationPeriod, probationReduction, lastVariablePayDate, documents
         } = req.body;
 
-        // --- FIX APPLIED HERE ---
-        // This handles cases where multer might create an array for a field from duplicate form inputs.
-        // We ensure we only use a single value for the database query to prevent SQL syntax errors.
         if (Array.isArray(probationPeriod)) {
             probationPeriod = probationPeriod[0];
         }
         if (Array.isArray(probationReduction)) {
             probationReduction = probationReduction[0];
         }
-        // --- END OF FIX ---
 
         let currentDocuments = JSON.parse(documents || '[]');
         if (req.files) {
@@ -123,12 +159,24 @@ app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res)
         res.status(500).json({ error: 'Failed to update employee' });
     }
 });
-// --- END OF UPDATED CODE BLOCK ---
 
 app.put('/api/employees/:id/delete', async (req, res) => { try { const { id } = req.params; const { reason, lastWorkingDate } = req.body; await db.query("UPDATE employees SET status = 'Inactive', terminationReason = ?, lastWorkingDate = ? WHERE id = ?", [reason, lastWorkingDate, id]); res.json({ message: 'Employee archived successfully' }); } catch (err) { console.error('Error deleting employee:', err); res.status(500).json({ error: 'Failed to delete employee' }); } });
 
 // --- API Routes for Offer Letters ---
-app.get('/api/offer-letters', async (req, res) => { try { const [rows] = await db.query('SELECT * FROM offer_letters ORDER BY id DESC'); res.json(rows); } catch (err) { console.error('Error fetching offer letters:', err); res.status(500).json({ error: 'Failed to fetch offer letters' }); } });
+app.get('/api/offer-letters', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM offer_letters ORDER BY id DESC');
+        const formattedRows = rows.map(row => ({
+            ...row,
+            joinDate: formatDateForInput(row.joinDate),
+            date: formatDateForInput(row.date)
+        }));
+        res.json(formattedRows);
+    } catch (err) {
+        console.error('Error fetching offer letters:', err);
+        res.status(500).json({ error: 'Failed to fetch offer letters' });
+    }
+});
 app.post('/api/offer-letters', async (req, res) => { try { const { candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date } = req.body; const sql = `INSERT INTO offer_letters (candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; const [result] = await db.query(sql, [candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date]); res.status(201).json({ message: 'Offer letter created successfully!', insertId: result.insertId }); } catch (err) { console.error('Error creating offer letter:', err); res.status(500).json({ error: 'Failed to create offer letter' }); } });
 app.put('/api/offer-letters/:id/accept', async (req, res) => { try { const { id } = req.params; const sql = `UPDATE offer_letters SET status = 'Accepted' WHERE id = ?`; await db.query(sql, [id]); res.json({ message: 'Offer letter accepted successfully!' }); } catch (err) { console.error('Error accepting offer letter:', err); res.status(500).json({ error: 'Failed to accept offer letter' }); } });
 app.put('/api/offer-letters/:id', async (req, res) => { try { const { id } = req.params; const letterData = req.body; const sql = `UPDATE offer_letters SET candidateName=?, position=?, salary=?, joinDate=?, probationPeriod=?, probationReduction=?, variablePay=? WHERE id=?`; await db.query(sql, [letterData.candidateName, letterData.position, letterData.salary, letterData.joinDate, letterData.probationPeriod, letterData.probationReduction, letterData.variablePay, id]); res.json({ message: 'Offer letter revised successfully!' }); } catch (err) { console.error('Error revising offer letter:', err); res.status(500).json({ error: 'Failed to revise offer letter' }); } });
@@ -137,3 +185,4 @@ app.put('/api/offer-letters/:id', async (req, res) => { try { const { id } = req
 app.get('/', (req, res) => { res.send('APPHOX MetaTrack360 API is running...'); });
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => { try { await db.query('SELECT 1'); console.log('Successfully connected to the database.'); } catch (err) { console.error('Error connecting to the database:', err.stack); } console.log(`Server is running on port ${PORT}`); });
+
