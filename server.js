@@ -3,7 +3,7 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const mysql = require('mysql2');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
+const nodemailer = a('nodemailer');
 const crypto = require('crypto');
 const multer = require('multer');
 const path = require('path');
@@ -53,30 +53,35 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-// --- NEW HELPER FUNCTION TO FORMAT DATES ---
-const formatDateForInput = (dateString) => {
-    if (!dateString) {
-        return null;
-    }
-    // Converts a full timestamp (like "2025-10-01T00:00:00.000Z")
-    // into a "YYYY-MM-DD" string required by HTML date inputs.
-    try {
-        return new Date(dateString).toISOString().split('T')[0];
-    } catch (e) {
-        return null; // Return null if the date is invalid
-    }
-};
-
-
 const app = express();
 
-// Middleware
-app.use(cors());
+// --- Middleware ---
+
+// --- UPDATED CORS CONFIGURATION ---
+// This explicitly allows your frontend to make requests to this backend.
+const corsOptions = {
+  origin: 'https://apphoxtech.com',
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+// --- END OF UPDATE ---
+
+
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 // --- API Routes ---
+
+// --- Helper function to format dates ---
+function formatDate(dateString) {
+    if (!dateString) return null;
+    const date = new Date(dateString);
+    // Adjust for timezone offset to prevent date from changing
+    const timezoneOffset = date.getTimezoneOffset() * 60000;
+    const adjustedDate = new Date(date.getTime() + timezoneOffset);
+    return adjustedDate.toISOString().split('T')[0];
+}
 
 // --- API Routes for Applicants ---
 app.get('/api/applicants', async (req, res) => { try { const [rows] = await db.query('SELECT * FROM applicants ORDER BY id DESC'); res.json(rows); } catch (err) { console.error('Error fetching applicants:', err); res.status(500).json({ error: 'Failed to fetch applicants' }); } });
@@ -90,93 +95,14 @@ app.post('/api/users/register', async (req, res) => { try { const { name, email,
 app.post('/api/users/set-password', async (req, res) => { try { const { token, password } = req.body; const hashedToken = crypto.createHash('sha256').update(token).digest('hex'); const findUserSql = `SELECT * FROM users WHERE passwordResetToken = ? AND passwordResetExpires > NOW()`; const [users] = await db.query(findUserSql, [hashedToken]); if (users.length === 0) { return res.status(400).json({ error: 'Password reset token is invalid or has expired.' }); } const user = users[0]; const salt = await bcrypt.genSalt(10); const hashedPassword = await bcrypt.hash(password, salt); const updateUserSql = `UPDATE users SET password = ?, passwordResetToken = NULL, passwordResetExpires = NULL WHERE id = ?`; await db.query(updateUserSql, [hashedPassword, user.id]); res.json({ message: 'Password has been set successfully.' }); } catch (err) { console.error('Error setting password:', err); res.status(500).json({ error: 'Failed to set password.' }); } });
 
 // --- API Routes for Employees ---
-app.get('/api/employees', async (req, res) => {
-    try {
-        const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Active' ORDER BY id DESC");
-        const formattedRows = rows.map(row => ({
-            ...row,
-            joinDate: formatDateForInput(row.joinDate),
-            lastVariablePayDate: formatDateForInput(row.lastVariablePayDate)
-        }));
-        res.json(formattedRows);
-    } catch (err) {
-        console.error('Error fetching employees:', err);
-        res.status(500).json({ error: 'Failed to fetch employees' });
-    }
-});
-app.get('/api/employees/archived', async (req, res) => {
-    try {
-        const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Inactive' ORDER BY id DESC");
-        const formattedRows = rows.map(row => ({
-            ...row,
-            joinDate: formatDateForInput(row.joinDate),
-            lastVariablePayDate: formatDateForInput(row.lastVariablePayDate),
-            lastWorkingDate: formatDateForInput(row.lastWorkingDate)
-        }));
-        res.json(formattedRows);
-    } catch (err) {
-        console.error('Error fetching archived employees:', err);
-        res.status(500).json({ error: 'Failed to fetch archived employees' });
-    }
-});
+app.get('/api/employees', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Active' ORDER BY id DESC"); const formattedRows = rows.map(row => ({ ...row, joinDate: formatDate(row.joinDate), lastWorkingDate: formatDate(row.lastWorkingDate) })); res.json(formattedRows); } catch (err) { console.error('Error fetching employees:', err); res.status(500).json({ error: 'Failed to fetch employees' }); } });
+app.get('/api/employees/archived', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Inactive' ORDER BY id DESC"); const formattedRows = rows.map(row => ({ ...row, joinDate: formatDate(row.joinDate), lastWorkingDate: formatDate(row.lastWorkingDate) })); res.json(formattedRows); } catch (err) { console.error('Error fetching archived employees:', err); res.status(500).json({ error: 'Failed to fetch archived employees' }); } });
 app.post('/api/employees', async (req, res) => { try { const { name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents } = req.body; const sql = `INSERT INTO employees (name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; const [result] = await db.query(sql, [name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents || '[]']); res.status(201).json({ message: 'Employee created successfully!', insertId: result.insertId }); } catch (err) { console.error('Error creating employee:', err); res.status(500).json({ error: 'Failed to create employee' }); } });
-
-app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res) => {
-    try {
-        const { id } = req.params;
-        let {
-            name, department, position, email, phone, joinDate, ctc, location,
-            bankAccountNumber, pfNumber, uan, serviceLine, variablePay,
-            probationPeriod, probationReduction, lastVariablePayDate, documents
-        } = req.body;
-
-        if (Array.isArray(probationPeriod)) {
-            probationPeriod = probationPeriod[0];
-        }
-        if (Array.isArray(probationReduction)) {
-            probationReduction = probationReduction[0];
-        }
-
-        let currentDocuments = JSON.parse(documents || '[]');
-        if (req.files) {
-            req.files.forEach(file => {
-                currentDocuments.push({ name: file.originalname, path: file.path });
-            });
-        }
-
-        const sql = `UPDATE employees SET name = ?, department = ?, position = ?, email = ?, phone = ?, joinDate = ?, ctc = ?, location = ?, bankAccountNumber = ?, pfNumber = ?, uan = ?, serviceLine = ?, variablePay = ?, probationPeriod = ?, probationReduction = ?, lastVariablePayDate = ?, documents = ? WHERE id = ?`;
-        
-        await db.query(sql, [
-            name, department, position, email, phone, joinDate, ctc, location,
-            bankAccountNumber, pfNumber, uan, serviceLine, variablePay,
-            probationPeriod, probationReduction, lastVariablePayDate,
-            JSON.stringify(currentDocuments), id
-        ]);
-
-        res.json({ message: 'Employee updated successfully!' });
-    } catch (err) {
-        console.error('Error updating employee:', err);
-        res.status(500).json({ error: 'Failed to update employee' });
-    }
-});
-
+app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res) => { try { const { id } = req.params; const { name, department, position, email, phone, joinDate, ctc, location, bankAccountNumber, pfNumber, uan, serviceLine, variablePay, probationPeriod, probationReduction, lastVariablePayDate, documents } = req.body; let currentDocuments = JSON.parse(documents || '[]'); if (req.files) { req.files.forEach(file => { currentDocuments.push({ name: file.originalname, path: file.path }); }); } const pPeriod = Array.isArray(probationPeriod) ? probationPeriod[0] : probationPeriod; const pReduction = Array.isArray(probationReduction) ? probationReduction[0] : probationReduction; const sql = `UPDATE employees SET name = ?, department = ?, position = ?, email = ?, phone = ?, joinDate = ?, ctc = ?, location = ?, bankAccountNumber = ?, pfNumber = ?, uan = ?, serviceLine = ?, variablePay = ?, probationPeriod = ?, probationReduction = ?, lastVariablePayDate = ?, documents = ? WHERE id = ?`; await db.query(sql, [ name, department, position, email, phone, joinDate, ctc, location, bankAccountNumber, pfNumber, uan, serviceLine, variablePay, pPeriod, pReduction, lastVariablePayDate, JSON.stringify(currentDocuments), id ]); res.json({ message: 'Employee updated successfully!' }); } catch (err) { console.error('Error updating employee:', err); res.status(500).json({ error: 'Failed to update employee' }); } });
 app.put('/api/employees/:id/delete', async (req, res) => { try { const { id } = req.params; const { reason, lastWorkingDate } = req.body; await db.query("UPDATE employees SET status = 'Inactive', terminationReason = ?, lastWorkingDate = ? WHERE id = ?", [reason, lastWorkingDate, id]); res.json({ message: 'Employee archived successfully' }); } catch (err) { console.error('Error deleting employee:', err); res.status(500).json({ error: 'Failed to delete employee' }); } });
 
 // --- API Routes for Offer Letters ---
-app.get('/api/offer-letters', async (req, res) => {
-    try {
-        const [rows] = await db.query('SELECT * FROM offer_letters ORDER BY id DESC');
-        const formattedRows = rows.map(row => ({
-            ...row,
-            joinDate: formatDateForInput(row.joinDate),
-            date: formatDateForInput(row.date)
-        }));
-        res.json(formattedRows);
-    } catch (err) {
-        console.error('Error fetching offer letters:', err);
-        res.status(500).json({ error: 'Failed to fetch offer letters' });
-    }
-});
+app.get('/api/offer-letters', async (req, res) => { try { const [rows] = await db.query('SELECT * FROM offer_letters ORDER BY id DESC'); const formattedRows = rows.map(row => ({ ...row, joinDate: formatDate(row.joinDate), date: formatDate(row.date) })); res.json(formattedRows); } catch (err) { console.error('Error fetching offer letters:', err); res.status(500).json({ error: 'Failed to fetch offer letters' }); } });
 app.post('/api/offer-letters', async (req, res) => { try { const { candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date } = req.body; const sql = `INSERT INTO offer_letters (candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; const [result] = await db.query(sql, [candidateName, position, salary, joinDate, probationPeriod, probationReduction, location, email, phone, applicantId, variablePay, currentCTC, date]); res.status(201).json({ message: 'Offer letter created successfully!', insertId: result.insertId }); } catch (err) { console.error('Error creating offer letter:', err); res.status(500).json({ error: 'Failed to create offer letter' }); } });
 app.put('/api/offer-letters/:id/accept', async (req, res) => { try { const { id } = req.params; const sql = `UPDATE offer_letters SET status = 'Accepted' WHERE id = ?`; await db.query(sql, [id]); res.json({ message: 'Offer letter accepted successfully!' }); } catch (err) { console.error('Error accepting offer letter:', err); res.status(500).json({ error: 'Failed to accept offer letter' }); } });
 app.put('/api/offer-letters/:id', async (req, res) => { try { const { id } = req.params; const letterData = req.body; const sql = `UPDATE offer_letters SET candidateName=?, position=?, salary=?, joinDate=?, probationPeriod=?, probationReduction=?, variablePay=? WHERE id=?`; await db.query(sql, [letterData.candidateName, letterData.position, letterData.salary, letterData.joinDate, letterData.probationPeriod, letterData.probationReduction, letterData.variablePay, id]); res.json({ message: 'Offer letter revised successfully!' }); } catch (err) { console.error('Error revising offer letter:', err); res.status(500).json({ error: 'Failed to revise offer letter' }); } });
