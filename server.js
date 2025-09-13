@@ -38,7 +38,7 @@ const db = mysql.createPool({
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     waitForConnections: true,
-    connectionLimit: 5, // <-- Updated from 10 to 5
+    connectionLimit: 5,
     queueLimit: 0
 }).promise();
 
@@ -78,7 +78,53 @@ app.post('/api/users/set-password', async (req, res) => { try { const { token, p
 app.get('/api/employees', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Active' ORDER BY id DESC"); res.json(rows); } catch (err) { console.error('Error fetching employees:', err); res.status(500).json({ error: 'Failed to fetch employees' }); } });
 app.get('/api/employees/archived', async (req, res) => { try { const [rows] = await db.query("SELECT * FROM employees WHERE status = 'Inactive' ORDER BY id DESC"); res.json(rows); } catch (err) { console.error('Error fetching archived employees:', err); res.status(500).json({ error: 'Failed to fetch archived employees' }); } });
 app.post('/api/employees', async (req, res) => { try { const { name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents } = req.body; const sql = `INSERT INTO employees (name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; const [result] = await db.query(sql, [name, employeeId, department, position, email, phone, joinDate, ctc, location, marketSegment, variablePay, probationPeriod, probationReduction, documents || '[]']); res.status(201).json({ message: 'Employee created successfully!', insertId: result.insertId }); } catch (err) { console.error('Error creating employee:', err); res.status(500).json({ error: 'Failed to create employee' }); } });
-app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res) => { try { const { id } = req.params; const { name, department, position, email, phone, joinDate, ctc, location, bankAccountNumber, pfNumber, uan, serviceLine, variablePay, probationPeriod, probationReduction, lastVariablePayDate, documents } = req.body; let currentDocuments = JSON.parse(documents || '[]'); if (req.files) { req.files.forEach(file => { currentDocuments.push({ name: file.originalname, path: file.path }); }); } const sql = `UPDATE employees SET name = ?, department = ?, position = ?, email = ?, phone = ?, joinDate = ?, ctc = ?, location = ?, bankAccountNumber = ?, pfNumber = ?, uan = ?, serviceLine = ?, variablePay = ?, probationPeriod = ?, probationReduction = ?, lastVariablePayDate = ?, documents = ? WHERE id = ?`; await db.query(sql, [ name, department, position, email, phone, joinDate, ctc, location, bankAccountNumber, pfNumber, uan, serviceLine, variablePay, probationPeriod, probationReduction, lastVariablePayDate, JSON.stringify(currentDocuments), id ]); res.json({ message: 'Employee updated successfully!' }); } catch (err) { console.error('Error updating employee:', err); res.status(500).json({ error: 'Failed to update employee' }); } });
+
+// --- THIS IS THE UPDATED CODE BLOCK ---
+app.put('/api/employees/:id', upload.array('newDocuments', 10), async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Use 'let' to allow modification of variables from req.body
+        let {
+            name, department, position, email, phone, joinDate, ctc, location,
+            bankAccountNumber, pfNumber, uan, serviceLine, variablePay,
+            probationPeriod, probationReduction, lastVariablePayDate, documents
+        } = req.body;
+
+        // --- FIX APPLIED HERE ---
+        // This handles cases where multer might create an array for a field from duplicate form inputs.
+        // We ensure we only use a single value for the database query to prevent SQL syntax errors.
+        if (Array.isArray(probationPeriod)) {
+            probationPeriod = probationPeriod[0];
+        }
+        if (Array.isArray(probationReduction)) {
+            probationReduction = probationReduction[0];
+        }
+        // --- END OF FIX ---
+
+        let currentDocuments = JSON.parse(documents || '[]');
+        if (req.files) {
+            req.files.forEach(file => {
+                currentDocuments.push({ name: file.originalname, path: file.path });
+            });
+        }
+
+        const sql = `UPDATE employees SET name = ?, department = ?, position = ?, email = ?, phone = ?, joinDate = ?, ctc = ?, location = ?, bankAccountNumber = ?, pfNumber = ?, uan = ?, serviceLine = ?, variablePay = ?, probationPeriod = ?, probationReduction = ?, lastVariablePayDate = ?, documents = ? WHERE id = ?`;
+        
+        await db.query(sql, [
+            name, department, position, email, phone, joinDate, ctc, location,
+            bankAccountNumber, pfNumber, uan, serviceLine, variablePay,
+            probationPeriod, probationReduction, lastVariablePayDate,
+            JSON.stringify(currentDocuments), id
+        ]);
+
+        res.json({ message: 'Employee updated successfully!' });
+    } catch (err) {
+        console.error('Error updating employee:', err);
+        res.status(500).json({ error: 'Failed to update employee' });
+    }
+});
+// --- END OF UPDATED CODE BLOCK ---
+
 app.put('/api/employees/:id/delete', async (req, res) => { try { const { id } = req.params; const { reason, lastWorkingDate } = req.body; await db.query("UPDATE employees SET status = 'Inactive', terminationReason = ?, lastWorkingDate = ? WHERE id = ?", [reason, lastWorkingDate, id]); res.json({ message: 'Employee archived successfully' }); } catch (err) { console.error('Error deleting employee:', err); res.status(500).json({ error: 'Failed to delete employee' }); } });
 
 // --- API Routes for Offer Letters ---
@@ -91,4 +137,3 @@ app.put('/api/offer-letters/:id', async (req, res) => { try { const { id } = req
 app.get('/', (req, res) => { res.send('APPHOX MetaTrack360 API is running...'); });
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => { try { await db.query('SELECT 1'); console.log('Successfully connected to the database.'); } catch (err) { console.error('Error connecting to the database:', err.stack); } console.log(`Server is running on port ${PORT}`); });
-
